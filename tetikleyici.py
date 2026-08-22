@@ -18,6 +18,7 @@ import webrtcvad
 
 HERE = Path(__file__).parent
 KONUSUYOR_KILIDI = HERE / ".ortak_konusuyor"  # hook_konustur.py bunu Ortak konusurken olusturur
+SESLI_GIRIS_ISARETI = HERE / ".son_giris_sesli"  # gercek bir sesli mesaj gonderildiginde isaretlenir
 DURUM_DOSYASI = HERE / ".tetikleyici_durum.json"
 KWIN_JS = Path("/tmp/kwin_odakla_ortak.js")
 KWIN_PLUGIN_ADI = "ortak-odakla-daemon"
@@ -102,6 +103,7 @@ def _kwin_script_bosalt():
 
 def _temizlik(*_):
     DURUM_DOSYASI.unlink(missing_ok=True)
+    SESLI_GIRIS_ISARETI.unlink(missing_ok=True)
     _kwin_script_bosalt()
     sys.exit(0)
 
@@ -191,6 +193,7 @@ def calistir():
                         _log("konusma bitti -> gonder")
                         _durum_yaz("dinliyor")
                         _kayit_bitir()
+                        SESLI_GIRIS_ISARETI.touch()  # bu gercek bir sesli mesajdi, hook_konustur.py buna bakip sesli cevap versin
 
 
 if __name__ == "__main__":
