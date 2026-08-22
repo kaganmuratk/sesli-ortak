@@ -52,7 +52,7 @@ ORNEK_HIZI = 16000
 KARE_SURESI_MS = 30
 KARE_ORNEK = int(ORNEK_HIZI * KARE_SURESI_MS / 1000)
 ON_TAMPON_KARE = 10           # ~300ms - konusma baslamadan onceki tamponu da isin icine kat
-BASLAMA_ESIGI_KARE = 4        # ~120ms surekli konusma - gecikme ile yanlis-tetiklenme arasi orta nokta
+BASLAMA_ESIGI_KARE = 10       # ~300ms surekli konusma - fan/arka plan gurultusu false-trigger'ini azaltmak icin yukseltildi (2026-08-22)
 SESSIZLIK_ESIGI_KARE = 55     # ~1.65sn sessizlikten sonra konusma bitti say (erken kesmesin diye guvenli tarafta kaldik)
 VAD_AGRESIFLIK = 3            # 0-3, en yuksek - sadece net konusmayi sayar, arka plan gurultusunu eler
 
