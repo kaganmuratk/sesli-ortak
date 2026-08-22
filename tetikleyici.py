@@ -1,0 +1,197 @@
+"""Buton acikken surekli dinler: konusma basladiginda Ortak'in penceresine
+gecip Space'e basarak native /voice kaydini baslatir, konusma bitince tekrar
+Space'e basip gonderir. Uyandirma kelimesi yok - kullanici butonu bilerek
+actigi icin (gunluk/tam konusma oturumu), her konusma dogrudan islenir."""
+
+import collections
+import json
+import os
+import queue
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import sounddevice as sd
+import webrtcvad
+
+HERE = Path(__file__).parent
+KONUSUYOR_KILIDI = HERE / ".ortak_konusuyor"  # hook_konustur.py bunu Ortak konusurken olusturur
+DURUM_DOSYASI = HERE / ".tetikleyici_durum.json"
+KWIN_JS = Path("/tmp/kwin_odakla_ortak.js")
+KWIN_PLUGIN_ADI = "ortak-odakla-daemon"
+
+
+def _load_env():
+    env_path = HERE / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env()
+TERMINAL_SINIFI = os.environ.get("ORTAK_TERMINAL_SINIFI", "org.kde.konsole")
+PENCERE_ANAHTARI = os.environ.get("ORTAK_PENCERE_ANAHTARI", "")
+if not PENCERE_ANAHTARI:
+    sys.exit(
+        "[tetikleyici] .env icinde ORTAK_PENCERE_ANAHTARI ayarli degil.\n"
+        "Ortak'in calistigi terminal penceresinin basligindan gecen, "
+        "benzersiz bir kelime yaz (orn. proje klasor adin)."
+    )
+
+ORNEK_HIZI = 16000
+KARE_SURESI_MS = 30
+KARE_ORNEK = int(ORNEK_HIZI * KARE_SURESI_MS / 1000)
+ON_TAMPON_KARE = 10           # ~300ms - konusma baslamadan onceki tamponu da isin icine kat
+BASLAMA_ESIGI_KARE = 4        # ~120ms surekli konusma - gecikme ile yanlis-tetiklenme arasi orta nokta
+SESSIZLIK_ESIGI_KARE = 55     # ~1.65sn sessizlikten sonra konusma bitti say (erken kesmesin diye guvenli tarafta kaldik)
+VAD_AGRESIFLIK = 3            # 0-3, en yuksek - sadece net konusmayi sayar, arka plan gurultusunu eler
+
+vad = webrtcvad.Vad(VAD_AGRESIFLIK)
+_kwin_script_id: str | None = None
+
+
+def _log(msg: str):
+    print(f"[tetikleyici] {msg}", file=sys.stderr, flush=True)
+
+
+def _durum_yaz(durum: str):
+    try:
+        DURUM_DOSYASI.write_text(json.dumps({"durum": durum}))
+    except Exception:
+        pass
+
+
+def _kwin_script_yukle():
+    global _kwin_script_id
+    anahtar_js = json.dumps(PENCERE_ANAHTARI)  # JS string olarak guvenli kacis
+    sinif_js = json.dumps(TERMINAL_SINIFI)
+    KWIN_JS.write_text(
+        'var wins = workspace.windowList();\n'
+        'for (var i = 0; i < wins.length; i++) {\n'
+        '    var w = wins[i];\n'
+        f'    if (w.resourceClass === {sinif_js} && w.caption.indexOf({anahtar_js}) !== -1) {{\n'
+        '        workspace.activeWindow = w;\n'
+        '        break;\n'
+        '    }\n'
+        '}\n'
+    )
+    subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", KWIN_PLUGIN_ADI],
+                    capture_output=True)
+    sonuc = subprocess.run(
+        ["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", str(KWIN_JS), KWIN_PLUGIN_ADI],
+        capture_output=True, text=True,
+    )
+    _kwin_script_id = sonuc.stdout.strip()
+    _log(f"KWin odaklama script'i yuklendi, id={_kwin_script_id}")
+
+
+def _kwin_script_bosalt():
+    if _kwin_script_id is not None:
+        subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", KWIN_PLUGIN_ADI],
+                        capture_output=True)
+
+
+def _temizlik(*_):
+    DURUM_DOSYASI.unlink(missing_ok=True)
+    _kwin_script_bosalt()
+    sys.exit(0)
+
+
+def _odakla():
+    if _kwin_script_id is not None:
+        subprocess.run(["qdbus6", "org.kde.KWin", f"/Scripting/Script{_kwin_script_id}", "org.kde.kwin.Script.run"],
+                        capture_output=True)
+
+
+def _kayit_baslat():
+    _odakla()
+    subprocess.run(["ydotool", "key", "57:1", "57:0"])  # Space
+
+
+def _kayit_bitir():
+    _odakla()
+    subprocess.run(["ydotool", "key", "57:1", "57:0"])  # Space - normalde gonderir
+    # Guvenlik agi: native /voice bazen bos/anlamsiz transkriptte otomatik
+    # gondermiyor, kutu "kirli" (bos olmayan) kalip bir sonraki konusmayi
+    # engelliyor. Kisa bir bekleme sonrasi Enter'i de gondererek kutuyu her
+    # halukarda temizliyoruz - zaten gonderildiyse Enter zararsizdir.
+    time.sleep(0.3)
+    subprocess.run(["ydotool", "key", "28:1", "28:0"])  # Enter
+
+
+def calistir():
+    signal.signal(signal.SIGTERM, _temizlik)
+    signal.signal(signal.SIGINT, _temizlik)
+
+    q: "queue.Queue[bytes]" = queue.Queue()
+
+    def ses_geldi(indata, frames, time_info, status):
+        q.put(bytes(indata))
+
+    _kwin_script_yukle()
+    _log("baslatildi, dinliyor")
+    _durum_yaz("dinliyor")
+    with sd.RawInputStream(
+        samplerate=ORNEK_HIZI, blocksize=KARE_ORNEK, dtype="int16", channels=1, callback=ses_geldi
+    ):
+        on_tampon = collections.deque(maxlen=ON_TAMPON_KARE)
+        baslama_sayaci = 0
+        sessiz_sayac = 0
+        konusuyor = False
+
+        while True:
+            kare = q.get()
+
+            if KONUSUYOR_KILIDI.exists():
+                # Ortak su an konusmaya basladi (TTS). Eger tam o anda bir kayit
+                # aciksa (konusuyor=True), once onu duzgunce kapatalim - yoksa
+                # acik kalan native kayit Ortak'in sesini de icine alip
+                # transkripti kirletir.
+                if konusuyor:
+                    _log("Ortak konusmaya basladi, acik kaydi kapatiyorum")
+                    _kayit_bitir()
+                    konusuyor = False
+                    _durum_yaz("dinliyor")
+                baslama_sayaci = 0
+                on_tampon.clear()
+                continue
+
+            konusma_mi = vad.is_speech(kare, ORNEK_HIZI)
+
+            if not konusuyor:
+                on_tampon.append(kare)
+                if konusma_mi:
+                    baslama_sayaci += 1
+                    if baslama_sayaci >= BASLAMA_ESIGI_KARE:
+                        konusuyor = True
+                        sessiz_sayac = 0
+                        _log("konusma basladi -> Space")
+                        _durum_yaz("konusuyor")
+                        _kayit_baslat()
+                else:
+                    baslama_sayaci = 0
+            else:
+                if konusma_mi:
+                    sessiz_sayac = 0
+                else:
+                    sessiz_sayac += 1
+                    if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
+                        konusuyor = False
+                        baslama_sayaci = 0
+                        on_tampon.clear()
+                        _log("konusma bitti -> gonder")
+                        _durum_yaz("dinliyor")
+                        _kayit_bitir()
+
+
+if __name__ == "__main__":
+    calistir()

@@ -1,0 +1,18 @@
+[project]
+name = "sesli-ortak"
+version = "0.1.0"
+description = "Claude Code oturumunla ayni terminalde sesle konusmani saglayan hafif bir sesli asistan katmani"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "elevenlabs>=2.0",
+    "flask>=3.0",
+    "sounddevice>=0.4",
+    "webrtcvad>=2.0",
+    "piper-tts>=1.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

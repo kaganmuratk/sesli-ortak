@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Buyuk ses modeli — python3 -m piper.download_voices ile indirilir
+voices/*.onnx
+
+# Calisma zamani durumu / uretilen dosyalar
+*.log
+.ortak_konusuyor
+.sesli_mod_acik
+.tetikleyici_durum.json
+_son_cevap*.mp3
+_son_cevap*.wav
+_son_cevap.wav
+
+# OS
+.DS_Store
