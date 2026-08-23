@@ -130,70 +130,100 @@ def _kayit_bitir():
     subprocess.run(["ydotool", "key", "28:1", "28:0"])  # Enter
 
 
-def calistir():
-    signal.signal(signal.SIGTERM, _temizlik)
-    signal.signal(signal.SIGINT, _temizlik)
-
+def _dinleme_dongusu():
+    """Tek bir dinleme oturumu. Herhangi bir sebeple (cihaz hatasi, VAD
+    exception'i vb.) kesilirse, finally bloğu acik kalan kaydi native
+    tarafinda guvenle kapatir - boylece script/native state'i asla
+    birbirinden kopmaz (biri 'kapali' sanirken digeri 'acik' kalmaz)."""
     q: "queue.Queue[bytes]" = queue.Queue()
+    konusuyor = False
 
     def ses_geldi(indata, frames, time_info, status):
         q.put(bytes(indata))
 
+    _durum_yaz("dinliyor")
+    try:
+        with sd.RawInputStream(
+            samplerate=ORNEK_HIZI, blocksize=KARE_ORNEK, dtype="int16", channels=1, callback=ses_geldi
+        ):
+            on_tampon = collections.deque(maxlen=ON_TAMPON_KARE)
+            baslama_sayaci = 0
+            sessiz_sayac = 0
+
+            while True:
+                kare = q.get()
+
+                if KONUSUYOR_KILIDI.exists():
+                    # Ortak su an konusmaya basladi (TTS). Eger tam o anda bir kayit
+                    # aciksa (konusuyor=True), once onu duzgunce kapatalim - yoksa
+                    # acik kalan native kayit Ortak'in sesini de icine alip
+                    # transkripti kirletir.
+                    if konusuyor:
+                        _log("Ortak konusmaya basladi, acik kaydi kapatiyorum")
+                        _kayit_bitir()
+                        konusuyor = False
+                        _durum_yaz("dinliyor")
+                    baslama_sayaci = 0
+                    on_tampon.clear()
+                    continue
+
+                konusma_mi = vad.is_speech(kare, ORNEK_HIZI)
+
+                if not konusuyor:
+                    on_tampon.append(kare)
+                    if konusma_mi:
+                        baslama_sayaci += 1
+                        if baslama_sayaci >= BASLAMA_ESIGI_KARE:
+                            konusuyor = True
+                            sessiz_sayac = 0
+                            _log("konusma basladi -> Space")
+                            _durum_yaz("konusuyor")
+                            _kayit_baslat()
+                    else:
+                        baslama_sayaci = 0
+                else:
+                    if konusma_mi:
+                        sessiz_sayac = 0
+                    else:
+                        sessiz_sayac += 1
+                        if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
+                            konusuyor = False
+                            baslama_sayaci = 0
+                            on_tampon.clear()
+                            _log("konusma bitti -> gonder")
+                            _durum_yaz("dinliyor")
+                            _kayit_bitir()
+                            SESLI_GIRIS_ISARETI.touch()  # bu gercek bir sesli mesajdi, hook_konustur.py buna bakip sesli cevap versin
+    finally:
+        if konusuyor:
+            _log("dinleme dongusu beklenmedik sekilde kesildi, acik kayit vardi -> guvenlik icin kapatiyorum")
+            try:
+                _kayit_bitir()
+            except Exception as e:
+                _log(f"guvenlik kapatmasi da basarisiz oldu: {e!r}")
+
+
+def calistir():
+    signal.signal(signal.SIGTERM, _temizlik)
+    signal.signal(signal.SIGINT, _temizlik)
+
     _kwin_script_yukle()
     _log("baslatildi, dinliyor")
-    _durum_yaz("dinliyor")
-    with sd.RawInputStream(
-        samplerate=ORNEK_HIZI, blocksize=KARE_ORNEK, dtype="int16", channels=1, callback=ses_geldi
-    ):
-        on_tampon = collections.deque(maxlen=ON_TAMPON_KARE)
-        baslama_sayaci = 0
-        sessiz_sayac = 0
-        konusuyor = False
 
-        while True:
-            kare = q.get()
-
-            if KONUSUYOR_KILIDI.exists():
-                # Ortak su an konusmaya basladi (TTS). Eger tam o anda bir kayit
-                # aciksa (konusuyor=True), once onu duzgunce kapatalim - yoksa
-                # acik kalan native kayit Ortak'in sesini de icine alip
-                # transkripti kirletir.
-                if konusuyor:
-                    _log("Ortak konusmaya basladi, acik kaydi kapatiyorum")
-                    _kayit_bitir()
-                    konusuyor = False
-                    _durum_yaz("dinliyor")
-                baslama_sayaci = 0
-                on_tampon.clear()
-                continue
-
-            konusma_mi = vad.is_speech(kare, ORNEK_HIZI)
-
-            if not konusuyor:
-                on_tampon.append(kare)
-                if konusma_mi:
-                    baslama_sayaci += 1
-                    if baslama_sayaci >= BASLAMA_ESIGI_KARE:
-                        konusuyor = True
-                        sessiz_sayac = 0
-                        _log("konusma basladi -> Space")
-                        _durum_yaz("konusuyor")
-                        _kayit_baslat()
-                else:
-                    baslama_sayaci = 0
-            else:
-                if konusma_mi:
-                    sessiz_sayac = 0
-                else:
-                    sessiz_sayac += 1
-                    if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
-                        konusuyor = False
-                        baslama_sayaci = 0
-                        on_tampon.clear()
-                        _log("konusma bitti -> gonder")
-                        _durum_yaz("dinliyor")
-                        _kayit_bitir()
-                        SESLI_GIRIS_ISARETI.touch()  # bu gercek bir sesli mesajdi, hook_konustur.py buna bakip sesli cevap versin
+    # Cihaz/VAD kaynakli beklenmedik bir hata olursa (bluetooth kesintisi,
+    # uyku/uyanma, PipeWire yeniden baslamasi vb.) process eskiden sessizce
+    # cokuyordu ve kontrol paneli disaridan manuel restart gerektiriyordu -
+    # bu sirada native tarafta acik kalan bir kayit varsa, script ile native
+    # arasindaki state kopuyor ve bir sonraki konusma Space'i "baslat" yerine
+    # "durdur" olarak native'e ulasiyordu (kullanicinin "konusuyorum ama
+    # yazmiyor/gondermiyor" sikayetinin kok nedeni buydu). Artik disaridan
+    # gorunmeyecek sekilde kendi kendini toparlayip devam ediyor.
+    while True:
+        try:
+            _dinleme_dongusu()
+        except Exception as e:
+            _log(f"beklenmedik hata, kurtarmaya calisiyorum: {e!r}")
+            time.sleep(1)  # cihazin toparlanmasi icin kisa bir nefes
 
 
 if __name__ == "__main__":
