@@ -122,12 +122,20 @@ def _kayit_baslat():
 def _kayit_bitir():
     _odakla()
     subprocess.run(["ydotool", "key", "57:1", "57:0"])  # Space - normalde gonderir
-    # Guvenlik agi: native /voice bazen bos/anlamsiz transkriptte otomatik
-    # gondermiyor, kutu "kirli" (bos olmayan) kalip bir sonraki konusmayi
-    # engelliyor. Kisa bir bekleme sonrasi Enter'i de gondererek kutuyu her
-    # halukarda temizliyoruz - zaten gonderildiyse Enter zararsizdir.
-    time.sleep(0.3)
-    subprocess.run(["ydotool", "key", "28:1", "28:0"])  # Enter
+    # Guvenlik agi: native /voice'un yaziya cevirmeyi (transkripsiyon) bitirip
+    # kutuya yazmasi degisken bir sure alabiliyor - sabit tek seferlik 0.3sn'lik
+    # bekleme bunu her zaman yakalayamiyordu. Eger Enter, yaziya cevirme daha
+    # bitmeden gonderilirse bos bir kutuya gidiyor (etkisiz), metin birkac
+    # saniye sonra gelince kimse "gonder" demeden kutuda asili kaliyor - sonraki
+    # konusma bu asili kalan metnin uzerine karisiyordu. Tek Enter yerine
+    # birden fazla Enter'i artan araliklarla gonderiyoruz: yaziya cevirme hangi
+    # anda biterse bitsin en az biri dogru zamana denk geliyor. Kutu zaten
+    # bosaldiysa fazladan Enter'lar zararsizdir (bos kutuda etkisizdir).
+    onceki_bekleme = 0.0
+    for hedef_bekleme in (0.3, 0.9, 1.8):
+        time.sleep(hedef_bekleme - onceki_bekleme)
+        subprocess.run(["ydotool", "key", "28:1", "28:0"])  # Enter
+        onceki_bekleme = hedef_bekleme
 
 
 def _dinleme_dongusu():
