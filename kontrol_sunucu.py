@@ -6,9 +6,11 @@ kullanilabilir. Yaziya cevirme islerine hic karismiyor, o Claude Code'un
 native /voice'una ait."""
 
 import json
+import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template
@@ -18,14 +20,48 @@ app = Flask(__name__)
 HERE = Path(__file__).parent
 DURUM_DOSYASI = HERE / ".tetikleyici_durum.json"
 SESLI_MOD_BAYRAGI = HERE / ".sesli_mod_acik"
+PID_DOSYASI = HERE / ".tetikleyici_pid"
 PYTHON = HERE / ".venv" / "bin" / "python3"
 
 _surec: subprocess.Popen | None = None
 
 
+def _pid_canli_mi(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # sinyal gondermez, sadece varlik/izin kontrolu yapar
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # baska kullanicinin sureci ama var - bize ait olma ihtimali dusuk, temkinli davran
+
+
+def _gercek_pid() -> int | None:
+    """PID dosyasindaki surec gercekten calisiyor mu diye dogrudan isletim
+    sistemine sorar - bu kontrol panelinin kendi hafizasina (_surec) degil,
+    gercege dayanir. kontrol_sunucu.py yeniden baslatildiginda (bilgisayar
+    kapanip acilmasi, oturum restart'i vb.) _surec sifirlaniyordu ama daha
+    onceki tetikleyici.py sureci olmeden calismaya devam ediyordu - panel
+    "kapali" gosterip kullanici tekrar "Baslat"a basinca ustune bir yenisi
+    daha ekleniyordu. Zamanla boyle 11 tane hayalet surec birikti
+    (2026-08-23'te tespit edildi, hepsi elle temizlendi). Artik PID dosyasi
+    tek gercek kaynak: dosya var ve icindeki PID gercekten yasiyorsa
+    "calisiyor" sayilir, yoksa (bayat dosya kalmis olsa bile) temizlenir."""
+    if not PID_DOSYASI.exists():
+        return None
+    try:
+        pid = int(PID_DOSYASI.read_text().strip())
+    except (ValueError, OSError):
+        PID_DOSYASI.unlink(missing_ok=True)
+        return None
+    if _pid_canli_mi(pid):
+        return pid
+    PID_DOSYASI.unlink(missing_ok=True)  # bayat dosya - surec cnokten olmus
+    return None
+
+
 def _calisiyor_mu() -> bool:
-    global _surec
-    return _surec is not None and _surec.poll() is None
+    return _gercek_pid() is not None
 
 
 @app.route("/")
@@ -48,11 +84,22 @@ def durum():
 @app.route("/degistir", methods=["POST"])
 def degistir():
     global _surec
-    if _calisiyor_mu():
-        _surec.send_signal(signal.SIGTERM)
-        _surec.wait(timeout=3)
+    calisan_pid = _gercek_pid()
+    if calisan_pid is not None:
+        # _surec bu PID'yi tanimiyor olabilir (baska bir kontrol_sunucu.py
+        # instance'i baslatmis olabilir) - gercek PID'ye dogrudan sinyal
+        # gonder, _surec'e guvenme.
+        try:
+            os.kill(calisan_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        beklenen = 0.0
+        while _pid_canli_mi(calisan_pid) and beklenen < 3.0:
+            time.sleep(0.1)
+            beklenen += 0.1
         _surec = None
         DURUM_DOSYASI.unlink(missing_ok=True)
+        PID_DOSYASI.unlink(missing_ok=True)
     else:
         _surec = subprocess.Popen(
             [str(PYTHON), str(HERE / "tetikleyici.py")],

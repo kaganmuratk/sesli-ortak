@@ -20,6 +20,7 @@ HERE = Path(__file__).parent
 KONUSUYOR_KILIDI = HERE / ".ortak_konusuyor"  # hook_konustur.py bunu Ortak konusurken olusturur
 SESLI_GIRIS_ISARETI = HERE / ".son_giris_sesli"  # gercek bir sesli mesaj gonderildiginde isaretlenir
 DURUM_DOSYASI = HERE / ".tetikleyici_durum.json"
+PID_DOSYASI = HERE / ".tetikleyici_pid"  # kontrol_sunucu.py yeniden baslasa bile gercek sureci bulabilsin diye
 KWIN_JS = Path("/tmp/kwin_odakla_ortak.js")
 KWIN_PLUGIN_ADI = "ortak-odakla-daemon"
 
@@ -119,6 +120,7 @@ def _temizlik(*_):
             _log(f"guvenlik kapatmasi basarisiz oldu: {e!r}")
     DURUM_DOSYASI.unlink(missing_ok=True)
     SESLI_GIRIS_ISARETI.unlink(missing_ok=True)
+    PID_DOSYASI.unlink(missing_ok=True)
     _kwin_script_bosalt()
     sys.exit(0)
 
@@ -231,6 +233,16 @@ def _dinleme_dongusu():
 def calistir():
     signal.signal(signal.SIGTERM, _temizlik)
     signal.signal(signal.SIGINT, _temizlik)
+
+    # PID dosyasi: kontrol_sunucu.py yeniden baslarsa (bilgisayar kapanip
+    # acilmasi, oturum restart'i vb.) kendi hafizasindaki surec referansini
+    # kaybediyor - PID dosyasi olmadan bu process "hayalet" kalip sonsuza
+    # kadar mikrofonu dinlemeye devam ediyordu, panel ise "kapali" gosterip
+    # kullanici "Baslat"a basinca bir yenisini daha baslatiyordu. Zamanla
+    # boyle 11 tane hayalet sureç birikti (2026-08-23'te tespit edildi).
+    # Artik kontrol_sunucu.py bu dosyadan gercek PID'yi okuyup canli olup
+    # olmadigini kendisi dogrulayabiliyor.
+    PID_DOSYASI.write_text(str(os.getpid()))
 
     _kwin_script_yukle()
     _log("baslatildi, dinliyor")
