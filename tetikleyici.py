@@ -58,6 +58,7 @@ VAD_AGRESIFLIK = 3            # 0-3, en yuksek - sadece net konusmayi sayar, ark
 
 vad = webrtcvad.Vad(VAD_AGRESIFLIK)
 _kwin_script_id: str | None = None
+_acik_kayit_var = False  # _temizlik() sinyal handler'i erisebilsin diye global tutuluyor
 
 
 def _log(msg: str):
@@ -102,6 +103,20 @@ def _kwin_script_bosalt():
 
 
 def _temizlik(*_):
+    # Kontrol panelinden mikrofon kapatilmasi (SIGTERM) ya da baska bir disaridan
+    # gelen sinyal, TAM O SIRADA bir kayit acikken gelirse - eskiden bu fonksiyon
+    # native kaydi hic kapatmadan cikiyordu. Native'de kayit acik kalirken script
+    # kapaniyor, kullanici tekrar actiginda yeni process "konusuyor=False" saniyor
+    # ama native hala "acik" - bir sonraki gercek konusmada gonderilen Space,
+    # native'in acik kaydini baslatmak yerine KAPATIYORDU (kullanicinin "susmama
+    # ragmen mesaj gitti, sonra konustugumda algilamadi/gondermedi" sikayetinin
+    # kok nedeni muhtemelen buydu, crash-safe donguyu atlayan bir yoldan).
+    if _acik_kayit_var:
+        _log("kapatma sinyali geldi, acik kayit vardi -> guvenlik icin kapatiyorum")
+        try:
+            _kayit_bitir()
+        except Exception as e:
+            _log(f"guvenlik kapatmasi basarisiz oldu: {e!r}")
     DURUM_DOSYASI.unlink(missing_ok=True)
     SESLI_GIRIS_ISARETI.unlink(missing_ok=True)
     _kwin_script_bosalt()
@@ -143,8 +158,8 @@ def _dinleme_dongusu():
     exception'i vb.) kesilirse, finally bloğu acik kalan kaydi native
     tarafinda guvenle kapatir - boylece script/native state'i asla
     birbirinden kopmaz (biri 'kapali' sanirken digeri 'acik' kalmaz)."""
+    global _acik_kayit_var
     q: "queue.Queue[bytes]" = queue.Queue()
-    konusuyor = False
 
     def ses_geldi(indata, frames, time_info, status):
         q.put(bytes(indata))
@@ -163,13 +178,13 @@ def _dinleme_dongusu():
 
                 if KONUSUYOR_KILIDI.exists():
                     # Ortak su an konusmaya basladi (TTS). Eger tam o anda bir kayit
-                    # aciksa (konusuyor=True), once onu duzgunce kapatalim - yoksa
+                    # aciksa (_acik_kayit_var), once onu duzgunce kapatalim - yoksa
                     # acik kalan native kayit Ortak'in sesini de icine alip
                     # transkripti kirletir.
-                    if konusuyor:
+                    if _acik_kayit_var:
                         _log("Ortak konusmaya basladi, acik kaydi kapatiyorum")
                         _kayit_bitir()
-                        konusuyor = False
+                        _acik_kayit_var = False
                         _durum_yaz("dinliyor")
                     baslama_sayaci = 0
                     on_tampon.clear()
@@ -177,12 +192,12 @@ def _dinleme_dongusu():
 
                 konusma_mi = vad.is_speech(kare, ORNEK_HIZI)
 
-                if not konusuyor:
+                if not _acik_kayit_var:
                     on_tampon.append(kare)
                     if konusma_mi:
                         baslama_sayaci += 1
                         if baslama_sayaci >= BASLAMA_ESIGI_KARE:
-                            konusuyor = True
+                            _acik_kayit_var = True
                             sessiz_sayac = 0
                             _log("konusma basladi -> Space")
                             _durum_yaz("konusuyor")
@@ -195,7 +210,7 @@ def _dinleme_dongusu():
                     else:
                         sessiz_sayac += 1
                         if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
-                            konusuyor = False
+                            _acik_kayit_var = False
                             baslama_sayaci = 0
                             on_tampon.clear()
                             _log("konusma bitti -> gonder")
@@ -203,12 +218,14 @@ def _dinleme_dongusu():
                             _kayit_bitir()
                             SESLI_GIRIS_ISARETI.touch()  # bu gercek bir sesli mesajdi, hook_konustur.py buna bakip sesli cevap versin
     finally:
-        if konusuyor:
+        if _acik_kayit_var:
             _log("dinleme dongusu beklenmedik sekilde kesildi, acik kayit vardi -> guvenlik icin kapatiyorum")
             try:
                 _kayit_bitir()
             except Exception as e:
                 _log(f"guvenlik kapatmasi da basarisiz oldu: {e!r}")
+            finally:
+                _acik_kayit_var = False
 
 
 def calistir():
