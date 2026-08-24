@@ -13,8 +13,8 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 SESLI_MOD_BAYRAGI = HERE / ".sesli_mod_acik"
-KONUSUYOR_KILIDI = HERE / ".ortak_konusuyor"  # tetikleyici.py bunu gorunce mikrofon tetiklemesini durdurur
-SESLI_GIRIS_ISARETI = HERE / ".son_giris_sesli"  # tetikleyici.py gercek bir sesli mesaj gonderince isaretler
+KONUSUYOR_KILIDI = HERE / ".ortak_konusuyor"  # dinleyici.py bunu gorunce mikrofon tetiklemesini durdurur
+SESLI_GIRIS_ISARETI = HERE / ".son_giris_sesli"  # dinleyici.py gercek bir sesli mesaj gonderince isaretler
 MAX_BEKLEME_SN = 60  # baska bir cevap konusuyorsa en fazla bu kadar bekle, sonra pes gec
 
 

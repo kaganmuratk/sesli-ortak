@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -24,6 +25,7 @@ PID_DOSYASI = HERE / ".tetikleyici_pid"
 PYTHON = HERE / ".venv" / "bin" / "python3"
 
 _surec: subprocess.Popen | None = None
+_degistir_kilidi = threading.Lock()
 
 
 def _pid_canli_mi(pid: int) -> bool:
@@ -69,45 +71,91 @@ def anasayfa():
     return render_template("index.html")
 
 
+def _tetikleyici_durumu() -> str:
+    if not DURUM_DOSYASI.exists():
+        return ""
+    try:
+        return json.loads(DURUM_DOSYASI.read_text()).get("durum") or ""
+    except Exception:
+        return ""
+
+
 @app.route("/durum")
 def durum():
     aktif = _calisiyor_mu()
-    konusuyor = False
-    if aktif and DURUM_DOSYASI.exists():
-        try:
-            konusuyor = json.loads(DURUM_DOSYASI.read_text()).get("durum") == "konusuyor"
-        except Exception:
-            pass
-    return jsonify({"aktif": aktif, "konusuyor": konusuyor, "sesli_acik": SESLI_MOD_BAYRAGI.exists()})
+    d = _tetikleyici_durumu() if aktif else ""
+    return jsonify({
+        "aktif": aktif,
+        "konusuyor": d == "konusuyor",
+        "isleniyor": d == "isleniyor",
+        "sesli_acik": SESLI_MOD_BAYRAGI.exists(),
+    })
 
 
 @app.route("/degistir", methods=["POST"])
 def degistir():
     global _surec
-    calisan_pid = _gercek_pid()
-    if calisan_pid is not None:
-        # _surec bu PID'yi tanimiyor olabilir (baska bir kontrol_sunucu.py
-        # instance'i baslatmis olabilir) - gercek PID'ye dogrudan sinyal
-        # gonder, _surec'e guvenme.
-        try:
-            os.kill(calisan_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        beklenen = 0.0
-        while _pid_canli_mi(calisan_pid) and beklenen < 3.0:
-            time.sleep(0.1)
-            beklenen += 0.1
-        _surec = None
-        DURUM_DOSYASI.unlink(missing_ok=True)
-        PID_DOSYASI.unlink(missing_ok=True)
-    else:
-        _surec = subprocess.Popen(
-            [str(PYTHON), str(HERE / "tetikleyici.py")],
-            cwd=HERE,
-            stdout=subprocess.DEVNULL,
-            stderr=open(HERE / "tetikleyici.log", "a"),
-        )
-    return jsonify({"aktif": _calisiyor_mu()})
+    # Kilit olmadan, ust uste (cift tiklama, sayfa yenilenmesi, paralel bir
+    # curl cagrisi vb.) gelen iki /degistir istegi ayni anda "calismiyor"
+    # gorup ikisi de yeni bir tetikleyici.py baslatabiliyordu - bu tek
+    # basina yeterli degildi, asil sorun asagida.
+    with _degistir_kilidi:
+        calisan_pid = _gercek_pid()
+        if calisan_pid is not None:
+            # Tam kapatma aninda bir transkripsiyon/temizleme isi surerse
+            # (durum "isleniyor"), asagidaki SIGTERM o thread'i yarim birakip
+            # mesaji sessizce kaybediyordu - 2026-08-24, 154sn'lik bir mesaj
+            # tam bu yuzden hic ulasmadi (kayit bitti -> 3sn sonra kullanici
+            # kapat'a bastı -> islem ortasinda oldu). Once isin bitmesini
+            # bekliyoruz (makul bir tavan ile - donmus/hic bitmeyen bir istek
+            # kullaniciyi sonsuza kadar kapatamaz durumda birakmasin).
+            beklenen = 0.0
+            while _tetikleyici_durumu() == "isleniyor" and beklenen < 90.0:
+                time.sleep(0.2)
+                beklenen += 0.2
+            # _surec bu PID'yi tanimiyor olabilir (baska bir kontrol_sunucu.py
+            # instance'i baslatmis olabilir) - gercek PID'ye dogrudan sinyal
+            # gonder, _surec'e guvenme.
+            try:
+                os.kill(calisan_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            beklenen = 0.0
+            while _pid_canli_mi(calisan_pid) and beklenen < 3.0:
+                time.sleep(0.1)
+                beklenen += 0.1
+            _surec = None
+            DURUM_DOSYASI.unlink(missing_ok=True)
+            PID_DOSYASI.unlink(missing_ok=True)
+            # Guvenlik agi: PID dosyasi sadece TEK bir sureci takip ediyor.
+            # Gecmiste (2026-08-23, 2026-08-24) PID dosyasi disinda kalan
+            # kopya tetikleyici.py surecleri birikmisti - "kapat" dedigimizde
+            # kullanici gercekten kapanmasini bekliyor, dosyadaki tek PID'ye
+            # guvenmek yetmiyor. Kendi PID'imiz disinda eslesen her seyi de
+            # temizle (bu script "tetikleyici.py" stringini kendi komut
+            # satirinda hic tasimadigi icin kendini vurma riski yok).
+            subprocess.run(["pkill", "-9", "-f", "dinleyici.py"], check=False)
+        else:
+            _surec = subprocess.Popen(
+                [str(PYTHON), str(HERE / "dinleyici.py")],
+                cwd=HERE,
+                stdout=subprocess.DEVNULL,
+                stderr=open(HERE / "dinleyici.log", "a"),
+            )
+            # ASIL KOK NEDEN (2026-08-24, 18 hayalet surec birikti): tetikleyici.py
+            # agir kutuphaneleri (mikrofon/VAD) ice aktardiktan SONRA kendi PID'sini
+            # yaziyor - bu birkac saniye surebiliyor. Bu bekleme olmadan fonksiyon
+            # hemen donuyordu; o birkac saniyelik pencerede gelen bir sonraki
+            # /degistir cagrisi (kullanici "tepki vermiyor" sanip tekrar tiklayinca)
+            # PID dosyasini henuz goremedigi icin sureci "calismiyor" saniyor ve
+            # bir kopya daha baslatiyordu. Simdi PID dosyasi gercekten yazilana
+            # kadar burada bekliyoruz - boylece bir sonraki cagri (ust uste
+            # tiklansa bile) gercek durumu görür, kopya baslatmaz.
+            beklenen = 0.0
+            while _gercek_pid() is None and beklenen < 8.0:
+                time.sleep(0.1)
+                beklenen += 0.1
+        return jsonify({"aktif": _calisiyor_mu()})
 
 
 @app.route("/sesli_degistir", methods=["POST"])
@@ -129,4 +177,6 @@ def kes():
 
 if __name__ == "__main__":
     print("Sesli Ortak kontrol paneli: http://127.0.0.1:5005", file=sys.stderr)
-    app.run(host="127.0.0.1", port=5005, debug=False)
+    # threaded=True: /degistir kapatirken "isleniyor" bitene kadar bekleyebiliyor
+    # (yeni), bu bekleme sirasinda /durum'un (panelin spinner'i) bloklanmamasi icin.
+    app.run(host="127.0.0.1", port=5005, debug=False, threaded=True)

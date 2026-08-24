@@ -4,51 +4,50 @@
 > açık olan **aynı** terminal oturumunda. Ayrı bir pencere, ayrı bir uygulama yok.
 >
 > *(EN: A lightweight voice layer for Claude Code — speak to it and hear replies,
-> synced to the exact terminal session you already have open. Linux/KDE Plasma only.)*
+> synced to the exact terminal session you already have open. Linux/Wayland only.)*
 
 ## Ne yapar
 
-Claude Code'un kendi native `/voice` dikte özelliğini konuşmayı otomatik
-başlatıp bitirecek şekilde tetikler, cevapları da (istersen) sesli okur.
-Elini klavyeye götürmeden, "sesli mod" açıkken konuşmaya başladığın an
-mikrofon algılar, Claude Code'un çalıştığı pencereye otomatik geçer,
-konuşmanı yazıya döker ve gönderir. Cevap gelince de (ElevenLabs veya
-tamamen ücretsiz yerel bir ses ile) sesli okur.
+Elini klavyeye götürmeden, "sesli mod" açıkken konuşmaya başladığın an mikrofon
+algılar, konuşmanı yazıya döker, o an odaktaki pencereye yapıştırır ve gönderir
+(Enter). Pencere bulma/odaklama yok — neredeysen (Claude Code, herhangi bir
+başka pencere) oraya gider. Cevap gelince de (ElevenLabs veya tamamen ücretsiz
+yerel bir ses ile) sesli okur.
 
 Uyandırma kelimesi yok — "sesli mod" düğmesini sen açıp kapatıyorsun, açıkken
 her konuşma otomatik işlenir.
 
 ## Mimari
 
-Üç bağımsız parça, hiçbiri Claude Code'un kendi mimarisine dokunmuyor:
+Üç bağımsız parça:
 
-1. **Girdi — Claude Code'un native `/voice`'u.** Konuşmayı yazıya çeviren asıl
-   iş burada oluyor (resmi özellik, ücretsiz, `.claude/settings.json` içinde
-   `"voice": {"enabled": true, "mode": "tap"}` ile açılır).
-2. **Otomatik tetikleme — `tetikleyici.py`.** Mikrofonu sürekli dinler
-   (WebRTC VAD ile konuşma/sessizlik ayrımı), konuşma başlayınca KWin
-   scripting (`qdbus6`) ile doğru terminal penceresine odaklanıp `ydotool`
-   ile Space'e basar (native kaydı başlatır/durdurur).
+1. **Girdi — `dinleyici.py`.** Mikrofonu sürekli dinler (WebRTC VAD ile
+   konuşma/sessizlik ayrımı), konuşma bitince Dikte (`~/dikte`) motorunu
+   kullanıp transkribe eder, temizler, panoya kopyalar (`wl-copy`) ve
+   `ydotool` ile yapıştırıp gönderir. Dikte'nin kendi felsefesi aynen
+   geçerli: pencere odaklama yok, neredeysen oraya gider.
+2. **Kontrol paneli — `kontrol_sunucu.py`.** `dinleyici.py` sürecini
+   başlatır/durdurur, `http://127.0.0.1:5005`'te küçük bir panel sunar.
 3. **Çıktı — `hook_konustur.py` + `tts.py`.** Claude Code'un `Stop` hook'undan
    tetiklenir, son cevabı ElevenLabs (birincil) ya da Piper (tamamen yerel/
    ücretsiz yedek) ile seslendirir.
 
-Üç parça arasında dosya tabanlı basit kilitler var (`.ortak_konusuyor` vb.) —
+Parçalar arasında dosya tabanlı basit kilitler var (`.ortak_konusuyor` vb.) —
 soket veya kuyruk yok, kasıtlı olarak basit tutuldu.
 
 ## Önkoşullar
 
-Bu araç **Linux + KDE Plasma (Wayland)** için yazıldı, pencere odaklama KWin'in
-script API'sine dayanıyor. Farklı bir masaüstü ortamında (GNOME, Windows, macOS)
-`tetikleyici.py`'deki `_kwin_script_yukle`/`_odakla` fonksiyonlarını kendi
-platformunun pencere yönetimine göre uyarlaman gerekir.
+Wayland (`wl-clipboard` panoya yazmak için) ve `ydotool` (syntetik tuş basma
+için) gerekiyor; pencere yöneticisine özel bir bağımlılık yok (artık KWin/
+qdbus6 gerekmiyor).
 
-- Linux, KDE Plasma 6 (Wayland)
-- `qdbus6` (KDE ile birlikte gelir)
+- Linux, Wayland
+- Dikte kurulu olmalı (`~/dikte`) — transkripsiyon, temizleme ve pano/
+  yapıştırma motoru buradan ödünç alınıyor
+- `wl-clipboard` (`wl-copy`/`wl-paste`)
 - `ydotool` + `ydotoold` (çalışır durumda; syntetik tuş basma için)
 - [`uv`](https://docs.astral.sh/uv/) (Python paket/venv yönetimi)
 - `ffmpeg`, `paplay` (ses dönüştürme/çalma)
-- Claude Code hesabı, `/voice` özelliği açık
 - (Opsiyonel ama önerilir) [ElevenLabs](https://elevenlabs.io) hesabı — ücretsiz
   planı yeterli. Hiç istemiyorsan tamamen atlanabilir, sistem otomatik olarak
   yerel/ücretsiz Piper TTS'e düşer.
@@ -67,15 +66,16 @@ cp .env.example .env
 
 - `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` — istersen (boş bırakırsan
   doğrudan Piper kullanılır).
-- `ORTAK_PENCERE_ANAHTARI` — **zorunlu.** Claude Code'u çalıştırdığın terminal
-  penceresinin başlığından geçen, benzersiz bir kelime (örn. proje klasör adın).
-- `ORTAK_TERMINAL_SINIFI` — Konsole dışında bir terminal kullanıyorsan değiştir.
 
-Claude Code tarafında (`.claude/settings.json`, kendi projenin kökünde):
+Ayrıca Dikte'nin kendisi de kurulu ve yapılandırılmış olmalı (`~/dikte`,
+`~/.config/dikte/config.json`) — transkripsiyon API'si, temizleme modeli gibi
+ayarlar oradan okunuyor.
+
+Claude Code tarafında, sesli cevap (çıktı) için `.claude/settings.json`
+(kendi projenin kökünde):
 
 ```json
 {
-  "voice": { "enabled": true, "mode": "tap" },
   "hooks": {
     "Stop": [
       { "hooks": [{ "type": "command",
@@ -102,20 +102,23 @@ başladığın an otomatik algılanır — hiçbir tuşa basmana gerek yok.
 
 ## Bilinen sınırlamalar
 
-- İlk 1-2 kelime bazen kırpılabilir (pencere odaklama + tuş gönderme gecikmesi,
-  mimarinin doğal bir sınırı).
+- İlk ~300ms'lik konuşma başlangıcı VAD eşiğinin doğal gecikmesi yüzünden
+  kırpılabilir (ön tampon bunu büyük ölçüde telafi ediyor ama tam değil).
 - Kulaklık kullanmadan hoparlörle geri besleme riski var (kendi sesini
   mikrofon algılayabilir) — kulaklık önerilir.
 - Arka plan gürültüsü nadiren yanlış tetikleyip boş bir konuşma gönderebilir.
-- Sadece KDE Plasma/Wayland + Konsole için test edildi.
+- Wayland (`wl-clipboard` + `ydotool`) gerektiriyor; sadece KDE Plasma üzerinde
+  test edildi ama pencere yöneticisine özel bir bağımlılığı yok.
 
 ## Neden böyle
 
 Bu, Claude Code'la (bende "Ortak" adıyla ikinci beynim olarak çalışıyor) elimi
 klavyeden kaldırmadan, aynı canlı oturumda konuşabilmek için kendi ihtiyacımdan
 çıktı. Önce kendi STT/TTS altyapımı sıfırdan kurdum, sonra Claude Code'un
-yerleşik `/voice`'unu keşfedip büyük kısmını sildim — geriye kalan, sadece
-gerçekten gerekli olan bu üç parça.
+yerleşik `/voice`'unu keşfedip büyük kısmını sildim; sonra da masaüstümdeki
+Dikte uygulamasından ilham alıp girdi tarafını pencere odaklamayan, Dikte'nin
+motorunu ödünç alan bugünkü haline getirdim — geriye kalan, sadece gerçekten
+gerekli olan üç parça.
 
 ## Lisans
 
