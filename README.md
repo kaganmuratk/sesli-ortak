@@ -19,7 +19,7 @@ her konuşma otomatik işlenir.
 
 ## Mimari
 
-Üç bağımsız parça:
+Dört bağımsız parça:
 
 1. **Girdi — `dinleyici.py`.** Mikrofonu sürekli dinler (WebRTC VAD ile
    konuşma/sessizlik ayrımı), konuşma bitince Dikte (`~/dikte`) motorunu
@@ -31,6 +31,11 @@ her konuşma otomatik işlenir.
 3. **Çıktı — `hook_konustur.py` + `tts.py`.** Claude Code'un `Stop` hook'undan
    tetiklenir, son cevabı ElevenLabs (birincil) ya da Piper (tamamen yerel/
    ücretsiz yedek) ile seslendirir.
+4. **Ekran göstergesi — `gosterge.py`.** Ekranın sol-alt köşesinde kalıcı,
+   küçük bir durum göstergesi: kapalı/dinliyor/kaydediyor/işleniyor. Kontrol
+   panelini tarayıcıda açık tutmaya gerek kalmadan, sesli-ortak arka planda
+   çalışırken bile "beni dinliyor mu?" sorusuna tek bakışta cevap verir.
+   `kontrol_sunucu.py` tarafından otomatik başlatılır/kapatılır.
 
 Parçalar arasında dosya tabanlı basit kilitler var (`.ortak_konusuyor` vb.) —
 soket veya kuyruk yok, kasıtlı olarak basit tutuldu.
@@ -100,6 +105,10 @@ dinlemeyi aç/kapat, sesli cevabı bağımsız olarak aç/kapat, çalan sesi an�
 kesmek için bir "Kes" düğmesi. Mikrofonu açtığında (sesli mod), konuşmaya
 başladığın an otomatik algılanır — hiçbir tuşa basmana gerek yok.
 
+Aynı anda ekranın sol-alt köşesinde küçük bir durum göstergesi de belirir
+(`gosterge.py`, otomatik başlar) — panel sekmesini açık tutmana gerek kalmadan
+kapalı/dinliyor/kaydediyor/işleniyor durumunu her an gösterir.
+
 ## Bilinen sınırlamalar
 
 - İlk ~300ms'lik konuşma başlangıcı VAD eşiğinin doğal gecikmesi yüzünden
@@ -109,6 +118,10 @@ başladığın an otomatik algılanır — hiçbir tuşa basmana gerek yok.
 - Arka plan gürültüsü nadiren yanlış tetikleyip boş bir konuşma gönderebilir.
 - Wayland (`wl-clipboard` + `ydotool`) gerektiriyor; sadece KDE Plasma üzerinde
   test edildi ama pencere yöneticisine özel bir bağımlılığı yok.
+- Ekran göstergesi (`gosterge.py`) XWayland üzerinden çalışıyor (GTK3 +
+  `GDK_BACKEND=x11`) — sistem Python'unda PyGObject (`gi`) gerektirir, proje
+  venv'inde değil. Bulunamazsa ya da XWayland yoksa sessizce başarısız olur,
+  kontrol paneli/mikrofon bundan etkilenmez, sadece gösterge görünmez.
 
 ## Neden böyle
 
@@ -118,7 +131,7 @@ klavyeden kaldırmadan, aynı canlı oturumda konuşabilmek için kendi ihtiyac�
 yerleşik `/voice`'unu keşfedip büyük kısmını sildim; sonra da masaüstümdeki
 Dikte uygulamasından ilham alıp girdi tarafını pencere odaklamayan, Dikte'nin
 motorunu ödünç alan bugünkü haline getirdim — geriye kalan, sadece gerçekten
-gerekli olan üç parça.
+gerekli olan dört parça.
 
 ## Lisans
 

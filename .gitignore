@@ -14,6 +14,9 @@ voices/*.onnx
 .ortak_konusuyor
 .sesli_mod_acik
 .tetikleyici_durum.json
+.tetikleyici_pid
+.son_giris_sesli
+.gecici-*.wav
 _son_cevap*.mp3
 _son_cevap*.wav
 _son_cevap.wav

@@ -175,8 +175,40 @@ def kes():
     return jsonify({"kesildi": True})
 
 
+def _gostergeyi_baslat() -> subprocess.Popen | None:
+    # gosterge.py GTK/PyGObject kullanıyor - bu proje venv'inde (sadece
+    # Flask/sounddevice/webrtcvad icin kurulu) degil, sistem Python'unda
+    # bulunuyor. Bilerek sistem yorumlayicisi sabit verildi.
+    try:
+        return subprocess.Popen(
+            ["/usr/bin/python3", str(HERE / "gosterge.py")],
+            cwd=HERE,
+            stdout=subprocess.DEVNULL,
+            stderr=open(HERE / "gosterge.log", "a"),
+        )
+    except Exception as e:
+        print(f"Gosterge baslatilamadi (onemsiz, panel calismaya devam eder): {e}", file=sys.stderr)
+        return None
+
+
 if __name__ == "__main__":
     print("Sesli Ortak kontrol paneli: http://127.0.0.1:5005", file=sys.stderr)
-    # threaded=True: /degistir kapatirken "isleniyor" bitene kadar bekleyebiliyor
-    # (yeni), bu bekleme sirasinda /durum'un (panelin spinner'i) bloklanmamasi icin.
-    app.run(host="127.0.0.1", port=5005, debug=False, threaded=True)
+
+    _gosterge_sureci = _gostergeyi_baslat()
+
+    def _temizle_ve_cik(signum=None, frame=None):
+        if _gosterge_sureci is not None:
+            _gosterge_sureci.terminate()
+        sys.exit(0)
+
+    # SIGTERM varsayilan olarak Python finally bloklarini calistirmadan
+    # sureci hemen sonlandirir - gostergeyi de kapatmak icin acikca yakala.
+    signal.signal(signal.SIGTERM, _temizle_ve_cik)
+
+    try:
+        # threaded=True: /degistir kapatirken "isleniyor" bitene kadar bekleyebiliyor
+        # (yeni), bu bekleme sirasinda /durum'un (panelin spinner'i) bloklanmamasi icin.
+        app.run(host="127.0.0.1", port=5005, debug=False, threaded=True)
+    finally:
+        if _gosterge_sureci is not None:
+            _gosterge_sureci.terminate()
