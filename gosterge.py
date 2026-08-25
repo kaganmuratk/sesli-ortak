@@ -111,7 +111,10 @@ class Gosterge(Gtk.Window):
 
         self._konumlandir()
 
-        GLib.timeout_add(400, self._durumu_guncelle)
+        # 400ms -> 150ms (2026-08-25): "isleniyor" cok kisa surdugunde ya da
+        # hemen ardindan yeni bir kayit basladiginda eski aralik bu gecisi
+        # hic gostermeden atlayabiliyordu - kullanici bildirdi.
+        GLib.timeout_add(150, self._durumu_guncelle)
         GLib.timeout_add(80, self._nabiz_tik)
 
     def _kose_geometrisi(self, kose, geo):
