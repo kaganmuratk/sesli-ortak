@@ -272,12 +272,26 @@ def _dinleme_dongusu():
                         _log("konusma basladi")
                         _durum_yaz("konusuyor")
                 else:
-                    baslama_sayaci = 0
+                    # Sert sifirlama yerine "sizdirarak" azalt (2026-08-25):
+                    # arka plan gurultusu (fan, ezan vb.) VAD'i ara sira yanlis
+                    # siniflandirip tek bir kareyi "konusma degil" sayabiliyor -
+                    # eskiden bu TEK kare bile 300ms'lik ilerlemeyi komple
+                    # sifirlayip gercek konusmanin hic baslamamis gibi
+                    # gorunmesine sebep oluyordu. Su an sadece 1 geri aliyoruz,
+                    # yani konusma karelerinin >yarisi doğru siniflenirse ilerleme
+                    # birikmeye devam ediyor. Salt gurultu (hic konusma yokken)
+                    # hala 0'a dogru sizip esigi asamiyor - false-trigger korumasi
+                    # (e49b826) bozulmuyor.
+                    baslama_sayaci = max(0, baslama_sayaci - 1)
             else:
                 tampon.append(kare)
                 rms_degerleri.append(_rms(kare))
                 if konusma_mi:
-                    sessiz_sayac = 0
+                    # Ayni sizdirma mantigi burada da: konusma sirasindaki kisa
+                    # bir gurultu kaynakli "konusma" karesi, birikmis sessizlik
+                    # sayacini komple sifirlamasin - yoksa fan/ezan sesi yuzunden
+                    # "sustun" hic algilanmiyordu (2026-08-25, kullanici bildirdi).
+                    sessiz_sayac = max(0, sessiz_sayac - 1)
                 else:
                     sessiz_sayac += 1
                     if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
