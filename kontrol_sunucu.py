@@ -92,9 +92,73 @@ def durum():
     })
 
 
+def _baslat():
+    """dinleyici.py'yi baslatir (zaten calisiyor olmadigini varsayar,
+    cagiran _degistir_kilidi altinda emin olmali). /degistir ve
+    /baslat_veya_bitir arasinda ortak."""
+    global _surec
+    _surec = subprocess.Popen(
+        [str(PYTHON), str(HERE / "dinleyici.py")],
+        cwd=HERE,
+        stdout=subprocess.DEVNULL,
+        stderr=open(HERE / "dinleyici.log", "a"),
+    )
+    # ASIL KOK NEDEN (2026-08-24, 18 hayalet surec birikti): tetikleyici.py
+    # agir kutuphaneleri (mikrofon/VAD) ice aktardiktan SONRA kendi PID'sini
+    # yaziyor - bu birkac saniye surebiliyor. Bu bekleme olmadan fonksiyon
+    # hemen donuyordu; o birkac saniyelik pencerede gelen bir sonraki
+    # /degistir cagrisi (kullanici "tepki vermiyor" sanip tekrar tiklayinca)
+    # PID dosyasini henuz goremedigi icin sureci "calismiyor" saniyor ve
+    # bir kopya daha baslatiyordu. Simdi PID dosyasi gercekten yazilana
+    # kadar burada bekliyoruz - boylece bir sonraki cagri (ust uste
+    # tiklansa bile) gercek durumu görür, kopya baslatmaz.
+    beklenen = 0.0
+    while _gercek_pid() is None and beklenen < 8.0:
+        time.sleep(0.1)
+        beklenen += 0.1
+
+
+def _tamamen_kapat(calisan_pid: int):
+    """dinleyici.py'yi tamamen oldurur (cagiran _degistir_kilidi altinda
+    emin olmali). /degistir'in eski kapatma yolu, degismedi."""
+    global _surec
+    # Tam kapatma aninda bir transkripsiyon/temizleme isi surerse
+    # (durum "isleniyor"), asagidaki SIGTERM o thread'i yarim birakip
+    # mesaji sessizce kaybediyordu - 2026-08-24, 154sn'lik bir mesaj
+    # tam bu yuzden hic ulasmadi (kayit bitti -> 3sn sonra kullanici
+    # kapat'a bastı -> islem ortasinda oldu). Once isin bitmesini
+    # bekliyoruz (makul bir tavan ile - donmus/hic bitmeyen bir istek
+    # kullaniciyi sonsuza kadar kapatamaz durumda birakmasin).
+    beklenen = 0.0
+    while _tetikleyici_durumu() == "isleniyor" and beklenen < 90.0:
+        time.sleep(0.2)
+        beklenen += 0.2
+    # _surec bu PID'yi tanimiyor olabilir (baska bir kontrol_sunucu.py
+    # instance'i baslatmis olabilir) - gercek PID'ye dogrudan sinyal
+    # gonder, _surec'e guvenme.
+    try:
+        os.kill(calisan_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    beklenen = 0.0
+    while _pid_canli_mi(calisan_pid) and beklenen < 3.0:
+        time.sleep(0.1)
+        beklenen += 0.1
+    _surec = None
+    DURUM_DOSYASI.unlink(missing_ok=True)
+    PID_DOSYASI.unlink(missing_ok=True)
+    # Guvenlik agi: PID dosyasi sadece TEK bir sureci takip ediyor.
+    # Gecmiste (2026-08-23, 2026-08-24) PID dosyasi disinda kalan
+    # kopya tetikleyici.py surecleri birikmisti - "kapat" dedigimizde
+    # kullanici gercekten kapanmasini bekliyor, dosyadaki tek PID'ye
+    # guvenmek yetmiyor. Kendi PID'imiz disinda eslesen her seyi de
+    # temizle (bu script "tetikleyici.py" stringini kendi komut
+    # satirinda hic tasimadigi icin kendini vurma riski yok).
+    subprocess.run(["pkill", "-9", "-f", "dinleyici.py"], check=False)
+
+
 @app.route("/degistir", methods=["POST"])
 def degistir():
-    global _surec
     # Kilit olmadan, ust uste (cift tiklama, sayfa yenilenmesi, paralel bir
     # curl cagrisi vb.) gelen iki /degistir istegi ayni anda "calismiyor"
     # gorup ikisi de yeni bir tetikleyici.py baslatabiliyordu - bu tek
@@ -102,59 +166,9 @@ def degistir():
     with _degistir_kilidi:
         calisan_pid = _gercek_pid()
         if calisan_pid is not None:
-            # Tam kapatma aninda bir transkripsiyon/temizleme isi surerse
-            # (durum "isleniyor"), asagidaki SIGTERM o thread'i yarim birakip
-            # mesaji sessizce kaybediyordu - 2026-08-24, 154sn'lik bir mesaj
-            # tam bu yuzden hic ulasmadi (kayit bitti -> 3sn sonra kullanici
-            # kapat'a bastı -> islem ortasinda oldu). Once isin bitmesini
-            # bekliyoruz (makul bir tavan ile - donmus/hic bitmeyen bir istek
-            # kullaniciyi sonsuza kadar kapatamaz durumda birakmasin).
-            beklenen = 0.0
-            while _tetikleyici_durumu() == "isleniyor" and beklenen < 90.0:
-                time.sleep(0.2)
-                beklenen += 0.2
-            # _surec bu PID'yi tanimiyor olabilir (baska bir kontrol_sunucu.py
-            # instance'i baslatmis olabilir) - gercek PID'ye dogrudan sinyal
-            # gonder, _surec'e guvenme.
-            try:
-                os.kill(calisan_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            beklenen = 0.0
-            while _pid_canli_mi(calisan_pid) and beklenen < 3.0:
-                time.sleep(0.1)
-                beklenen += 0.1
-            _surec = None
-            DURUM_DOSYASI.unlink(missing_ok=True)
-            PID_DOSYASI.unlink(missing_ok=True)
-            # Guvenlik agi: PID dosyasi sadece TEK bir sureci takip ediyor.
-            # Gecmiste (2026-08-23, 2026-08-24) PID dosyasi disinda kalan
-            # kopya tetikleyici.py surecleri birikmisti - "kapat" dedigimizde
-            # kullanici gercekten kapanmasini bekliyor, dosyadaki tek PID'ye
-            # guvenmek yetmiyor. Kendi PID'imiz disinda eslesen her seyi de
-            # temizle (bu script "tetikleyici.py" stringini kendi komut
-            # satirinda hic tasimadigi icin kendini vurma riski yok).
-            subprocess.run(["pkill", "-9", "-f", "dinleyici.py"], check=False)
+            _tamamen_kapat(calisan_pid)
         else:
-            _surec = subprocess.Popen(
-                [str(PYTHON), str(HERE / "dinleyici.py")],
-                cwd=HERE,
-                stdout=subprocess.DEVNULL,
-                stderr=open(HERE / "dinleyici.log", "a"),
-            )
-            # ASIL KOK NEDEN (2026-08-24, 18 hayalet surec birikti): tetikleyici.py
-            # agir kutuphaneleri (mikrofon/VAD) ice aktardiktan SONRA kendi PID'sini
-            # yaziyor - bu birkac saniye surebiliyor. Bu bekleme olmadan fonksiyon
-            # hemen donuyordu; o birkac saniyelik pencerede gelen bir sonraki
-            # /degistir cagrisi (kullanici "tepki vermiyor" sanip tekrar tiklayinca)
-            # PID dosyasini henuz goremedigi icin sureci "calismiyor" saniyor ve
-            # bir kopya daha baslatiyordu. Simdi PID dosyasi gercekten yazilana
-            # kadar burada bekliyoruz - boylece bir sonraki cagri (ust uste
-            # tiklansa bile) gercek durumu görür, kopya baslatmaz.
-            beklenen = 0.0
-            while _gercek_pid() is None and beklenen < 8.0:
-                time.sleep(0.1)
-                beklenen += 0.1
+            _baslat()
         return jsonify({"aktif": _calisiyor_mu()})
 
 
@@ -171,6 +185,25 @@ def bitir():
         except ProcessLookupError:
             pass
     return jsonify({"gonderildi": pid is not None})
+
+
+@app.route("/baslat_veya_bitir", methods=["POST"])
+def baslat_veya_bitir():
+    # Tek tuşlu "akıllı" kısayol (ör. Ctrl+Space) icin: KAPALIYSA baslatir,
+    # ACIKSA (dinliyor ya da kayit yapiyor fark etmez) /bitir ile ayniyi
+    # yapar - sureci OLDURMEZ. Tamamen kapatmak icin hala ayri /degistir
+    # (ör. Ctrl+Alt+O) gerekiyor - kullanicinin 2026-08-25 istegi: Dikte'deki
+    # Ctrl+Space alonini sesli-ortak'a tasimak, ama "kapat" anlamina gelmeden.
+    with _degistir_kilidi:
+        calisan_pid = _gercek_pid()
+        if calisan_pid is None:
+            _baslat()
+            return jsonify({"aktif": True, "aksiyon": "baslatildi"})
+    try:
+        os.kill(calisan_pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        pass
+    return jsonify({"aktif": True, "aksiyon": "bitir"})
 
 
 @app.route("/sesli_degistir", methods=["POST"])
