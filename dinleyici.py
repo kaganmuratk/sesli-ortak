@@ -76,8 +76,14 @@ def _isleniyor_bitir():
     global _isleniyor_sayisi
     with _isleniyor_kilidi:
         _isleniyor_sayisi = max(0, _isleniyor_sayisi - 1)
-        if _isleniyor_sayisi == 0 and not _acik_kayit_var:
-            _durum_yaz("dinliyor")
+        if _isleniyor_sayisi == 0:
+            # _acik_kayit_var True ise (isleme surerken yeni bir kayit
+            # basladiysa) "dinliyor" degil "konusuyor" yazilmali - asagidaki
+            # baslama-algisi bloku artik "isleniyor" surerken durumu hic
+            # ezmiyor, o yuzden gercek "isleniyor" bitince burada dogru
+            # duruma donmek bize dusuyor (2026-08-25, kullanici bildirdi:
+            # mor "isleniyor" noktasi mesaj gonderilmeden kayboluyordu).
+            _durum_yaz("konusuyor" if _acik_kayit_var else "dinliyor")
 
 
 def _log(msg: str):
@@ -270,7 +276,14 @@ def _dinleme_dongusu():
                         tampon = list(on_tampon)
                         rms_degerleri = [_rms(k) for k in tampon]
                         _log("konusma basladi")
-                        _durum_yaz("konusuyor")
+                        # Onceki mesaj hala islenip gonderiliyorsa ("isleniyor",
+                        # yani _isleniyor_sayisi > 0) buradan "konusuyor" yazip
+                        # gostergedeki mor noktayi ERKEN kapatma - kullanici mesaj
+                        # gonderilmeden mor noktanin kaybolduğunu bildirdi
+                        # (2026-08-25). Isleme bitince _isleniyor_bitir() zaten
+                        # dogru duruma (bu durumda "konusuyor") donecek.
+                        if _isleniyor_sayisi == 0:
+                            _durum_yaz("konusuyor")
                 else:
                     # Sert sifirlama yerine "sizdirarak" azalt (2026-08-25),
                     # ama ASIMETRIK: kazanc +1, kayip -3. Ilk denemede (1'e 1)
