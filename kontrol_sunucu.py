@@ -158,6 +158,21 @@ def degistir():
         return jsonify({"aktif": _calisiyor_mu()})
 
 
+@app.route("/bitir", methods=["POST"])
+def bitir():
+    # /degistir'den farkli: sureci OLDURMEZ. Su an acik bir kayit varsa
+    # (arka plan gurultusu vb. yuzunden sessizlik esigi tetiklenmemis olsa
+    # bile) SIGUSR1 ile dinleyici.py'ye "simdi bitir, isle, gonder" der -
+    # dinleme devam eder. Kayit yoksa (idle "dinliyor") no-op.
+    pid = _gercek_pid()
+    if pid is not None:
+        try:
+            os.kill(pid, signal.SIGUSR1)
+        except ProcessLookupError:
+            pass
+    return jsonify({"gonderildi": pid is not None})
+
+
 @app.route("/sesli_degistir", methods=["POST"])
 def sesli_degistir():
     if SESLI_MOD_BAYRAGI.exists():

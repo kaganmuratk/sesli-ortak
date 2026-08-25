@@ -56,6 +56,7 @@ OTOMATIK_GONDER = True        # yapistirdiktan sonra Enter'a da bas (kapatmak ic
 vad = webrtcvad.Vad(VAD_AGRESIFLIK)
 conf = dikte_config.Config()
 _acik_kayit_var = False   # _temizlik() sinyal handler'i erisebilsin diye global tutuluyor
+_zorla_bitir_istek = False  # /bitir (SIGUSR1) ile kontrol panelinden gelen "simdi bitir" istegi
 _yapistirma_kilidi = threading.Lock()  # ust uste iki isleme ayni anda panoya yazmasin
 
 # Birden fazla cumle ust uste islenebiliyor (bkz. _isle docstring) - o yuzden
@@ -181,8 +182,19 @@ def _temizlik(signum=None, frame=None):
     sys.exit(0)
 
 
+def _zorla_bitir_isaretle(signum=None, frame=None):
+    # kontrol_sunucu.py /bitir ile bu sinyali gonderir - "tamamen kapat"tan
+    # (SIGTERM, sureci oldurur, kayitli-ama-islenmemis sesi kaybeder) farkli
+    # olarak, sadece o an acik olan kaydi sessizlik esigini beklemeden hemen
+    # bitirip normal isleme/gonderme yoluna sokar, dinlemeye devam eder.
+    # Arka plan gurultusu (vantilator, ezan vb.) sessizlik algisini bozdugunda
+    # kullanicinin manuel "bitti, gonder" demesi icin (2026-08-25).
+    global _zorla_bitir_istek
+    _zorla_bitir_istek = True
+
+
 def _dinleme_dongusu():
-    global _acik_kayit_var
+    global _acik_kayit_var, _zorla_bitir_istek
     q: "queue.Queue[bytes]" = queue.Queue()
 
     def ses_geldi(indata, frames, time_info, status):
@@ -198,8 +210,40 @@ def _dinleme_dongusu():
         baslama_sayaci = 0
         sessiz_sayac = 0
 
+        def _bitir_ve_isle(sebep: str):
+            nonlocal tampon, rms_degerleri, baslama_sayaci
+            global _acik_kayit_var
+            _acik_kayit_var = False
+            baslama_sayaci = 0
+            on_tampon.clear()
+            _log(f"konusma bitti ({sebep}) -> isleniyor")
+            # Durumu burada "dinliyor"a cevirmiyoruz - _isle() kendi basinda
+            # "isleniyor" yazacak, bitince "dinliyor"a donecek. Onceden burada
+            # erken "dinliyor" yazilmasi, uzun bir transkripsiyon/temizleme
+            # surerken panelin "acik, dinliyor" gostermesine (hicbir isaret
+            # vermemesine) sebep oluyordu - kullanici islemin surdugunu
+            # goremedigi icin kapat/ac kisayoluna basip in-flight isi SIGTERM
+            # ile oldurebiliyordu (2026-08-24, 154sn'lik bir mesaj bu sekilde
+            # kayboldu).
+            pcm = b"".join(tampon)
+            sure_sn = len(pcm) / 2 / ORNEK_HIZI
+            threading.Thread(
+                target=_isle, args=(pcm, list(rms_degerleri), sure_sn), daemon=True
+            ).start()
+            tampon = []
+            rms_degerleri = []
+
         while True:
             kare = q.get()
+
+            if _zorla_bitir_istek:
+                _zorla_bitir_istek = False
+                if _acik_kayit_var:
+                    # Sessizlik esigini (arka plan gurultusu vb. yuzunden hic
+                    # tetiklenmemis olabilir) beklemeden, o ana kadar kaydedileni
+                    # simdi bitir ve isle - sureci OLDURMEZ, dinlemeye devam eder.
+                    _bitir_ve_isle("manuel")
+                # Acik kayit yoksa (henuz konusma baslamamis) yapacak bir sey yok.
 
             if KONUSUYOR_KILIDI.exists():
                 # Ortak su an konusuyor (TTS) - kendi sesini dinlememesi icin
@@ -237,30 +281,13 @@ def _dinleme_dongusu():
                 else:
                     sessiz_sayac += 1
                     if sessiz_sayac >= SESSIZLIK_ESIGI_KARE:
-                        _acik_kayit_var = False
-                        baslama_sayaci = 0
-                        on_tampon.clear()
-                        _log("konusma bitti -> isleniyor")
-                        # Durumu burada "dinliyor"a cevirmiyoruz - _isle() kendi
-                        # basinda "isleniyor" yazacak, bitince "dinliyor"a donecek.
-                        # Onceden burada erken "dinliyor" yazilmasi, uzun bir
-                        # transkripsiyon/temizleme surerken panelin "acik, dinliyor"
-                        # gostermesine (hicbir isaret vermemesine) sebep oluyordu -
-                        # kullanici islemin surdugunu goremedigi icin kapat/ac
-                        # kisayoluna basip in-flight isi SIGTERM ile oldurebiliyordu
-                        # (2026-08-24, 154sn'lik bir mesaj bu sekilde kayboldu).
-                        pcm = b"".join(tampon)
-                        sure_sn = len(pcm) / 2 / ORNEK_HIZI
-                        threading.Thread(
-                            target=_isle, args=(pcm, list(rms_degerleri), sure_sn), daemon=True
-                        ).start()
-                        tampon = []
-                        rms_degerleri = []
+                        _bitir_ve_isle("sessizlik")
 
 
 def calistir():
     signal.signal(signal.SIGTERM, _temizlik)
     signal.signal(signal.SIGINT, _temizlik)
+    signal.signal(signal.SIGUSR1, _zorla_bitir_isaretle)
     PID_DOSYASI.write_text(str(os.getpid()))
     _log("baslatildi, dinliyor (pencere odaklama yok, panoya yapistiriyor)")
     while True:
