@@ -272,17 +272,19 @@ def _dinleme_dongusu():
                         _log("konusma basladi")
                         _durum_yaz("konusuyor")
                 else:
-                    # Sert sifirlama yerine "sizdirarak" azalt (2026-08-25):
-                    # arka plan gurultusu (fan, ezan vb.) VAD'i ara sira yanlis
-                    # siniflandirip tek bir kareyi "konusma degil" sayabiliyor -
-                    # eskiden bu TEK kare bile 300ms'lik ilerlemeyi komple
-                    # sifirlayip gercek konusmanin hic baslamamis gibi
-                    # gorunmesine sebep oluyordu. Su an sadece 1 geri aliyoruz,
-                    # yani konusma karelerinin >yarisi doğru siniflenirse ilerleme
-                    # birikmeye devam ediyor. Salt gurultu (hic konusma yokken)
-                    # hala 0'a dogru sizip esigi asamiyor - false-trigger korumasi
-                    # (e49b826) bozulmuyor.
-                    baslama_sayaci = max(0, baslama_sayaci - 1)
+                    # Sert sifirlama yerine "sizdirarak" azalt (2026-08-25),
+                    # ama ASIMETRIK: kazanc +1, kayip -3. Ilk denemede (1'e 1)
+                    # gecen fanin kendisi bile araya yeterince "konusma"
+                    # siniflanan kare serpistirdigi icin baslama_sayaci'ni
+                    # sifira gecirmeden surekli tetikleyebiliyordu (log'da
+                    # dogrulandi: her "bitir"den hemen sonra tekrar tekrar
+                    # "konusma basladi" -> "sessizlik sayildi" dongusu).
+                    # -3 ile salt gurultunun net ilerleme kaydetmesi icin
+                    # karelerin >%75'inin yanlislikla "konusma" siniflanmasi
+                    # gerekiyor - gercek konusmadaki tek-kare gurultu
+                    # kaymalarini hala affediyor ama fani konusma sanma riski
+                    # eskiye gore cok daha dusuk.
+                    baslama_sayaci = max(0, baslama_sayaci - 3)
             else:
                 tampon.append(kare)
                 rms_degerleri.append(_rms(kare))
