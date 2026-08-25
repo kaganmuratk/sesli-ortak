@@ -22,16 +22,26 @@ os.environ.setdefault("GDK_BACKEND", "x11")
 import math
 import sys
 import urllib.request
+from pathlib import Path
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk  # noqa: E402
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 DURUM_URL = os.environ.get("SESLI_ORTAK_DURUM_URL", "http://127.0.0.1:5005/durum")
 
+HERE = Path(__file__).parent
+KOSE_DOSYASI = HERE / ".gosterge_kose"
+
 GENISLIK, YUKSEKLIK = 190, 32
 KENAR_BOSLUGU_X, KENAR_BOSLUGU_Y = 16, 40
+
+# Surukleyip birakinca en yakinina yapisilan dort kose (2026-08-25, kullanici
+# istegi - eskiden sabit sol-alttaydi, terminaldeki yaziyi kapatiyordu).
+KOSELER = ("sol-alt", "sag-alt", "sol-ust", "sag-ust")
+VARSAYILAN_KOSE = "sol-alt"
 
 # templates/index.html ile aynı palet (--bg/--idle/--awake/--busy/--text)
 RENK_BG = (0.043, 0.047, 0.063, 0.88)
@@ -47,6 +57,21 @@ DURUM_GORSELLERI = {
     "konusuyor": (RENK_KONUSUYOR, "Kaydediyor…"),
     "isleniyor": (RENK_ISLENIYOR, "İşleniyor…"),
 }
+
+
+def _kose_oku() -> str:
+    try:
+        kose = KOSE_DOSYASI.read_text().strip()
+    except OSError:
+        return VARSAYILAN_KOSE
+    return kose if kose in KOSELER else VARSAYILAN_KOSE
+
+
+def _kose_yaz(kose: str):
+    try:
+        KOSE_DOSYASI.write_text(kose)
+    except OSError:
+        pass
 
 
 class Gosterge(Gtk.Window):
@@ -66,10 +91,22 @@ class Gosterge(Gtk.Window):
 
         self._durum = "kapali"
         self._nabiz = 0.0
+        self._kose = _kose_oku()
+        self._surukleniyor = False
+        self._surukleme_baslangic_isaretci = (0, 0)
+        self._surukleme_baslangic_pencere = (0, 0)
 
         self.alan = Gtk.DrawingArea()
         self.alan.set_size_request(GENISLIK, YUKSEKLIK)
         self.alan.connect("draw", self._ciz)
+        self.alan.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+        )
+        self.alan.connect("button-press-event", self._surukleme_baslat)
+        self.alan.connect("motion-notify-event", self._surukleme_hareket)
+        self.alan.connect("button-release-event", self._surukleme_bitir)
         self.add(self.alan)
 
         self._konumlandir()
@@ -77,14 +114,70 @@ class Gosterge(Gtk.Window):
         GLib.timeout_add(400, self._durumu_guncelle)
         GLib.timeout_add(80, self._nabiz_tik)
 
+    def _kose_geometrisi(self, kose, geo):
+        if kose == "sag-alt":
+            return (
+                geo.x + geo.width - GENISLIK - KENAR_BOSLUGU_X,
+                geo.y + geo.height - YUKSEKLIK - KENAR_BOSLUGU_Y,
+            )
+        if kose == "sol-ust":
+            return geo.x + KENAR_BOSLUGU_X, geo.y + KENAR_BOSLUGU_Y
+        if kose == "sag-ust":
+            return geo.x + geo.width - GENISLIK - KENAR_BOSLUGU_X, geo.y + KENAR_BOSLUGU_Y
+        return geo.x + KENAR_BOSLUGU_X, geo.y + geo.height - YUKSEKLIK - KENAR_BOSLUGU_Y  # sol-alt
+
     def _konumlandir(self):
         display = self.get_screen().get_display()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
         geo = monitor.get_geometry()
+        x, y = self._kose_geometrisi(self._kose, geo)
+        self.move(x, y)
+
+    def _surukleme_baslat(self, widget, event):
+        if event.button != 1:
+            return False
+        self._surukleniyor = True
+        self._surukleme_baslangic_isaretci = (event.x_root, event.y_root)
+        self._surukleme_baslangic_pencere = self.get_position()
+        return True
+
+    def _surukleme_hareket(self, widget, event):
+        if not self._surukleniyor:
+            return False
+        dx = event.x_root - self._surukleme_baslangic_isaretci[0]
+        dy = event.y_root - self._surukleme_baslangic_isaretci[1]
         self.move(
-            geo.x + KENAR_BOSLUGU_X,
-            geo.y + geo.height - YUKSEKLIK - KENAR_BOSLUGU_Y,
+            int(self._surukleme_baslangic_pencere[0] + dx),
+            int(self._surukleme_baslangic_pencere[1] + dy),
         )
+        return True
+
+    def _surukleme_bitir(self, widget, event):
+        if event.button != 1 or not self._surukleniyor:
+            return False
+        self._surukleniyor = False
+        self._en_yakin_koseye_yapistir()
+        return True
+
+    def _en_yakin_koseye_yapistir(self):
+        display = self.get_screen().get_display()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        geo = monitor.get_geometry()
+        pencere_x, pencere_y = self.get_position()
+        merkez_x = pencere_x + GENISLIK / 2
+        merkez_y = pencere_y + YUKSEKLIK / 2
+        sol = merkez_x < geo.x + geo.width / 2
+        ust = merkez_y < geo.y + geo.height / 2
+        if sol and ust:
+            self._kose = "sol-ust"
+        elif not sol and ust:
+            self._kose = "sag-ust"
+        elif sol and not ust:
+            self._kose = "sol-alt"
+        else:
+            self._kose = "sag-alt"
+        self._konumlandir()
+        _kose_yaz(self._kose)
 
     def _durumu_guncelle(self):
         try:
