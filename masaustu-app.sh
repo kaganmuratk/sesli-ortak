@@ -1,14 +1,14 @@
 #!/bin/bash
-# Sesli Ortak'ı bağımsız bir masaüstü uygulaması gibi açar: kontrol panelini
-# (Flask, 127.0.0.1:5005) tarayıcı sekmesi olarak değil, adres çubuğu/sekme
-# barı olmayan ayrı bir Chrome penceresinde (--app modu) gösterir. Panel her
-# zamanki gibi Flask üzerinden çalışmaya devam eder, bu script sadece ona
-# native bir pencere kabuğu giydiriyor (2026-08-28, Kağan Murat'ın isteğiyle).
+# Sesli Ortak'ı bağımsız bir masaüstü uygulaması gibi açar. İlk sürüm Chrome
+# --app modunu (ayrı pencere ama yine de tam bir tarayıcı süreci) kullanıyordu
+# - Kağan Murat "gerçek uygulama olsun, tarayıcı açmasın" dedi (2026-08-28),
+# bu yüzden masaustu-app.py (GTK3, tarayıcısız native pencere) ile değiştirildi.
+# Panel (kontrol_sunucu.py, Flask) API'si hâlâ arkada çalışıyor - bu script ona
+# native bir arayüz veriyor, kendisi bir şey render etmiyor.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PANEL_URL="http://127.0.0.1:5005"
-PROFIL_DIZINI="$HOME/.cache/sesli-ortak-app-chrome"
 
 # Panel (kontrol_sunucu.py) zaten çalışıyor mu diye bak, çalışmıyorsa başlat.
 if ! curl -s -o /dev/null -m 1 "$PANEL_URL/durum"; then
@@ -23,10 +23,6 @@ if ! curl -s -o /dev/null -m 1 "$PANEL_URL/durum"; then
     done
 fi
 
-exec google-chrome-stable \
-    --app="$PANEL_URL" \
-    --user-data-dir="$PROFIL_DIZINI" \
-    --class=SesliOrtakApp \
-    --window-size=420,560 \
-    --no-first-run \
-    --no-default-browser-check
+# masaustu-app.py GTK/PyGObject kullanıyor - gosterge.py'deki gibi bilerek
+# sistem Python'u (proje venv'inde PyGObject yok).
+exec /usr/bin/python3 "$HERE/masaustu-app.py"
