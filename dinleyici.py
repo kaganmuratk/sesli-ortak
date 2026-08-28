@@ -16,6 +16,7 @@ import json
 import math
 import os
 import queue
+import re
 import signal
 import sys
 import threading
@@ -97,6 +98,31 @@ def _durum_yaz(durum: str):
         pass
 
 
+# 2026-08-25 gecesi Kağan Murat hiç konuşmadığı halde (fan gürültüsü) sesli-ortak
+# tamamen alakasız, yanlış dilde bir metin (Yunanca "Παιχνίδια") üretip gönderdi.
+# Dikte'nin looks_like_hallucination'ı sadece bilinen stok-cümle listesine bakıyor,
+# beklenen dilden (Türkçe = Latin alfabesi) sapan çıktıyı yakalamıyor - bu yüzden
+# ek bir sinyal olarak script-uyuşmazlığı kontrolü ekliyoruz (config.py'deki
+# "language" Latin-alfabeli bir dilse anlamlı, ör. tr/en).
+_LATIN_HARF = re.compile(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]")
+_YABANCI_SCRIPT_HARF = re.compile(
+    r"[Ͱ-ϿЀ-ӿ֐-׿؀-ۿ一-鿿぀-ヿ]"
+)
+
+
+def _dil_uyusmazligi_mi(text: str) -> bool:
+    """Beklenen dil Latin alfabeliyken (tr/en) metinde Yunanca/Kiril/Arapça/
+    CJK gibi alakasiz bir script agirlikta gorunuyorsa, muhtemelen arka plan
+    gurultusunden uretilmis sahte bir transkripttir."""
+    if conf["language"] not in ("tr", "en", "auto"):
+        return False
+    latin = len(_LATIN_HARF.findall(text))
+    yabanci = len(_YABANCI_SCRIPT_HARF.findall(text))
+    if yabanci == 0:
+        return False
+    return yabanci >= latin
+
+
 def _rms(kare: bytes) -> float:
     """audio.chunk_levels'daki rms hesabinin aynisi (0..1) - PyQt6'siz."""
     samples = array.array("h")
@@ -143,6 +169,10 @@ def _isle(pcm: bytes, rms_degerleri: list[float], sure_sn: float):
 
         if conf["filter_hallucinations"] and dikte_vad.looks_like_hallucination(ham, sure_sn):
             _log(f"uydurma cumle sayildi, atlaniyor: {ham[:60]!r}")
+            return
+
+        if _dil_uyusmazligi_mi(ham):
+            _log(f"dil uyusmazligi (muhtemelen yanlis tetiklenme), atlaniyor: {ham[:60]!r}")
             return
 
         metin = ham
@@ -268,7 +298,16 @@ def _dinleme_dongusu():
 
             if not _acik_kayit_var:
                 on_tampon.append(kare)
-                if konusma_mi:
+                if konusma_mi and _isleniyor_sayisi > 0:
+                    # Onceki mesaj hala islenip gonderiliyorsa yeni bir kayit
+                    # BASLAMAMALI - kullanici "isleniyorken yeni kayit
+                    # baslamamali, o isin bitmesini beklemeli" bekliyor
+                    # (2026-08-25 gece, canli kullanimda kafa karisikligi
+                    # yasandi). Onceden bu kontrol sadece gostergeyi
+                    # koruyordu, gercek kayit yakalamayi engellemiyordu.
+                    baslama_sayaci = 0
+                    on_tampon.clear()
+                elif konusma_mi:
                     baslama_sayaci += 1
                     if baslama_sayaci >= BASLAMA_ESIGI_KARE:
                         _acik_kayit_var = True
